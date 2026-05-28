@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SalinityWatch · Environmental Monitoring Dashboard</title>
+
+  <!-- Bootstrap 5 -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.2/css/bootstrap.min.css" />
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+  <!-- Font Awesome -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
+  <!-- Google Fonts: legacy (kept for any fallback references) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <!-- Google Fonts: new design system -->
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Source+Sans+3:wght@300;400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="./css/style.css" />
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════
+     SIDEBAR NAVIGATION
+════════════════════════════════════════════════ -->
+<nav class="sidebar" id="sidebar">
+  <div class="sidebar-brand">
+    <div class="brand-icon"><img src="./images/logo.png"></div>
+    <div class="brand-text">
+      <span class="brand-title">SaltyBeats Dashboard</span>
+      <span class="brand-sub">Soliman · Tunisia</span>
+    </div>
+  </div>
+
+  <div class="sidebar-divider"></div>
+
+  <ul class="sidebar-nav">
+    <li class="nav-section-label">Overview</li>
+    <li class="nav-item active" data-section="overview">
+      <i class="fas fa-gauge-high"></i><span>Dashboard</span>
+    </li>
+    <li class="nav-item" data-section="map">
+      <i class="fas fa-map-location-dot"></i><span>Field Map</span>
+    </li>
+
+    <li class="nav-section-label">Analysis</li>
+    <li class="nav-item" data-section="timeseries">
+      <i class="fas fa-chart-line"></i><span>Time Series</span>
+    </li>
+    <li class="nav-item" data-section="indices">
+      <i class="fas fa-satellite"></i><span>Remote Sensing</span>
+    </li>
+    <li class="nav-item" data-section="interpolation">
+      <i class="fas fa-layer-group"></i><span>Interpolation Maps</span>
+    </li>
+
+    <li class="nav-section-label">Intelligence</li>
+    <li class="nav-item" data-section="ml">
+      <i class="fas fa-brain"></i><span>AI Predictions</span>
+      <span class="badge-alert">NEW</span>
+    </li>
+    <li class="nav-item" data-section="alerts">
+      <i class="fas fa-triangle-exclamation"></i><span>Alarm Points</span>
+      <span class="badge-count" id="alarmBadge">0</span>
+    </li>
+  </ul>
+
+  <div class="sidebar-footer">
+    <button class="theme-toggle" id="themeToggle" title="Toggle theme">
+      <i class="fas fa-moon" id="themeIcon"></i>
+    </button>
+    <button class="sidebar-collapse-btn" id="sidebarToggle" title="Collapse sidebar">
+      <i class="fas fa-chevron-left" id="toggleIcon"></i>
+    </button>
+  </div>
+</nav>
+
+<!-- ═══════════════════════════════════════════════
+     MAIN CONTENT
+════════════════════════════════════════════════ -->
+<main class="main-content" id="mainContent">
+
+  <!-- TOP HEADER BAR -->
+  <header class="top-header">
+    <div class="header-left">
+      <button class="mobile-menu-btn" id="mobileMenuBtn">
+        <i class="fas fa-bars"></i>
+      </button>
+      <div class="page-breadcrumb">
+        <span class="breadcrumb-icon"><i class="fas fa-gauge-high"></i></span>
+        <span id="pageTitle">Dashboard Overview</span>
+      </div>
+    </div>
+    <div class="header-right">
+      <!-- Date Filter -->
+      <div class="filter-group">
+        <label class="filter-label"><i class="fas fa-calendar-days"></i> Date</label>
+        <div class="btn-filter-group" id="dateFilter">
+          <button class="btn-filter active" data-date="all">All</button>
+          <button class="btn-filter" data-date="2025-05">May 2025</button>
+          <button class="btn-filter" data-date="2025-07">Jul 2025</button>
+        </div>
+      </div>
+      <!-- Index Selector -->
+      <div class="filter-group">
+        <label class="filter-label"><i class="fas fa-sliders"></i> Index</label>
+        <select class="index-select" id="indexSelect">
+          <option value="EC">EC (dS/m)</option>
+          <option value="TDS">TDS (mg/L)</option>
+          <option value="NDVI">NDVI</option>
+          <option value="NDWI">NDWI</option>
+          <option value="SI5">SI5</option>
+          <option value="S1">S1</option>
+        </select>
+      </div>
+      <!-- Last updated -->
+      <div class="last-updated">
+        <span class="dot-live"></span>
+        <span id="lastUpdated">Last sync: Jul 2025</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── SECTION: OVERVIEW ───────────────────────── -->
+  <section class="dashboard-section active" id="section-overview">
+
+    <!-- STAT CARDS -->
+    <div class="stats-grid">
+      <div class="stat-card stat-ec">
+        <div class="stat-icon"><i class="fas fa-bolt"></i></div>
+        <div class="stat-body">
+          <div class="stat-value" id="statEC">—</div>
+          <div class="stat-label">Avg EC (dS/m)</div>
+          <div class="stat-trend" id="trendEC"></div>
+        </div>
+      </div>
+      <div class="stat-card stat-tds">
+        <div class="stat-icon"><i class="fas fa-droplet"></i></div>
+        <div class="stat-body">
+          <div class="stat-value" id="statTDS">—</div>
+          <div class="stat-label">Avg TDS (mg/L)</div>
+          <div class="stat-trend" id="trendTDS"></div>
+        </div>
+      </div>
+      <div class="stat-card stat-ndvi">
+        <div class="stat-icon"><i class="fas fa-seedling"></i></div>
+        <div class="stat-body">
+          <div class="stat-value" id="statNDVI">—</div>
+          <div class="stat-label">Avg NDVI</div>
+          <div class="stat-trend" id="trendNDVI"></div>
+        </div>
+      </div>
+      <div class="stat-card stat-risk">
+        <div class="stat-icon"><i class="fas fa-triangle-exclamation"></i></div>
+        <div class="stat-body">
+          <div class="stat-value" id="statAlarms">—</div>
+          <div class="stat-label">High Risk Points</div>
+          <div class="stat-trend" id="trendAlarms"></div>
+        </div>
+      </div>
+      <div class="stat-card stat-si">
+        <div class="stat-icon"><i class="fas fa-sun"></i></div>
+        <div class="stat-body">
+          <div class="stat-value" id="statSI5">—</div>
+          <div class="stat-label">Avg SI5</div>
+          <div class="stat-trend" id="trendSI5"></div>
+        </div>
+      </div>
+      <div class="stat-card stat-ndwi">
+        <div class="stat-icon"><i class="fas fa-water"></i></div>
+        <div class="stat-body">
+          <div class="stat-value" id="statNDWI">—</div>
+          <div class="stat-label">Avg NDWI</div>
+          <div class="stat-trend" id="trendNDWI"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- OVERVIEW CHARTS ROW -->
+    <div class="charts-row">
+      <div class="chart-card chart-wide">
+        <div class="chart-header">
+          <span class="chart-title"><i class="fas fa-chart-line"></i> EC & TDS Overview</span>
+          <div class="chart-actions">
+            <button class="chart-btn active" data-chart-view="line">Line</button>
+            <button class="chart-btn" data-chart-view="bar">Bar</button>
+          </div>
+        </div>
+        <canvas id="overviewChart" height="120"></canvas>
+      </div>
+      <div class="chart-card chart-narrow">
+        <div class="chart-header">
+          <span class="chart-title"><i class="fas fa-chart-pie"></i> Risk Distribution</span>
+        </div>
+        <canvas id="riskDonutChart" height="200"></canvas>
+        <div class="donut-legend" id="donutLegend"></div>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ── SECTION: MAP ────────────────────────────── -->
+  <section class="dashboard-section" id="section-map">
+
+    <div class="map-wrapper">
+      <!-- Map Controls -->
+      <div class="map-controls">
+        <div class="control-group">
+          <label class="control-label">Base Map</label>
+          <div class="btn-filter-group" id="baseLayerControl">
+            <button class="btn-filter active" data-base="osm">Street</button>
+            <button class="btn-filter" data-base="satellite">Satellite</button>
+            <button class="btn-filter" data-base="terrain">Terrain</button>
+          </div>
+        </div>
+        <div class="control-group">
+          <label class="control-label">Overlay</label>
+          <div class="overlay-toggles" id="overlayToggles">
+            <label class="toggle-label"><input type="checkbox" id="overlayEC" checked /> EC Map</label>
+            <label class="toggle-label"><input type="checkbox" id="overlayTDS" /> TDS Map</label>
+            <label class="toggle-label"><input type="checkbox" id="overlayNDVI" /> NDVI Map</label>
+            <label class="toggle-label"><input type="checkbox" id="overlayNDWI" /> NDWI Map</label>
+            <label class="toggle-label"><input type="checkbox" id="overlaySI5" /> SI5 Map</label>
+            <label class="toggle-label"><input type="checkbox" id="overlayS1" /> S1 Map</label>
+            <label class="toggle-label"><input type="checkbox" id="overlayPoints" checked /> Sample Points</label>
+            <label class="toggle-label"><input type="checkbox" id="overlayAlarms" /> Alarm Points</label>
+          </div>
+        </div>
+        <div class="control-group">
+          <label class="control-label">Opacity</label>
+          <input type="range" class="opacity-slider" id="rasterOpacity" min="0" max="100" value="60" />
+        </div>
+      </div>
+
+      <!-- Map Container -->
+      <div id="map"></div>
+
+      <!-- Dynamic Legend -->
+      <div class="map-legend" id="mapLegend">
+        <div class="legend-title" id="legendTitle">EC (dS/m)</div>
+        <div class="legend-scale" id="legendScale"></div>
+      </div>
+
+      <!-- Map Info Panel -->
+      <div class="map-info-panel" id="mapInfoPanel">
+        <div class="info-panel-header">
+          <span><i class="fas fa-circle-info"></i> Point Info</span>
+          <button class="info-close" id="infoPanelClose"><i class="fas fa-xmark"></i></button>
+        </div>
+        <div class="info-panel-body" id="infoPanelBody">
+          <p class="info-placeholder">Click a sample point on the map.</p>
+        </div>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ── SECTION: TIME SERIES ───────────────────── -->
+  <section class="dashboard-section" id="section-timeseries">
+
+    <div class="section-header">
+      <h2 class="section-title">Time Series Analysis</h2>
+    </div>
+
+    <div class="charts-grid-2">
+      <div class="chart-card">
+        <div class="chart-header">
+          <span class="chart-title"><i class="fas fa-seedling"></i> NDVI Trend</span>
+          <div class="chart-actions">
+            <button data-expand-chart title="Expand chart"><i class="fas fa-expand"></i> Expand</button>
+          </div>
+        </div>
+        <canvas id="tsNDVIChart" height="180"></canvas>
+      </div>
+
+      <div class="chart-card">
+        <div class="chart-header">
+          <span class="chart-title"><i class="fas fa-water"></i> NDWI Trend</span>
+          <div class="chart-actions">
+            <button data-expand-chart title="Expand chart"><i class="fas fa-expand"></i> Expand</button>
+          </div>
+        </div>
+        <canvas id="tsNDWIChart" height="180"></canvas>
+      </div>
+
+      <div class="chart-card">
+        <div class="chart-header">
+          <span class="chart-title"><i class="fas fa-sun"></i> SI5 Trend</span>
+          <div class="chart-actions">
+            <button data-expand-chart title="Expand chart"><i class="fas fa-expand"></i> Expand</button>
+          </div>
+        </div>
+        <canvas id="tsSI5Chart" height="180"></canvas>
+      </div>
+
+      <div class="chart-card">
+        <div class="chart-header">
+          <span class="chart-title"><i class="fas fa-satellite"></i> Sentinel-1 (VV)</span>
+          <div class="chart-actions">
+            <button data-expand-chart title="Expand chart"><i class="fas fa-expand"></i> Expand</button>
+          </div>
+        </div>
+        <canvas id="tsS1Chart" height="180"></canvas>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ── SECTION: REMOTE SENSING ────────────────── -->
+  <section class="dashboard-section" id="section-indices">
+
+    <div class="section-header">
+      <h2 class="section-title">Remote Sensing Indices</h2>
+    </div>
+
+    <div class="charts-grid-2">
+      <div class="chart-card">
+        <div class="chart-header">
+          <span class="chart-title"><i class="fas fa-chart-scatter"></i> EC vs NDVI Correlation</span>
+        </div>
+        <canvas id="scatterECNDVI" height="200"></canvas>
+      </div>
+      <div class="chart-card">
+        <div class="chart-header">
+          <span class="chart-title"><i class="fas fa-chart-scatter"></i> EC vs SI5 Correlation</span>
+        </div>
+        <canvas id="scatterECSI5" height="200"></canvas>
+      </div>
+      <div class="chart-card">
+        <div class="chart-header">
+          <span class="chart-title"><i class="fas fa-chart-bar"></i> Index Distribution (Radar)</span>
+        </div>
+        <canvas id="radarChart" height="200"></canvas>
+      </div>
+      <div class="chart-card">
+        <div class="chart-header">
+          <span class="chart-title"><i class="fas fa-chart-bar"></i> Index Box Comparison</span>
+        </div>
+        <canvas id="indexBarChart" height="200"></canvas>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ── SECTION: INTERPOLATION ─────────────────── -->
+  <section class="dashboard-section" id="section-interpolation">
+
+    <div class="section-header">
+      <h2 class="section-title">Interpolation Maps</h2>
+    </div>
+
+    <div class="interp-grid">
+      <div class="interp-card" data-layer="TDS">
+        <div class="interp-preview" style="background-image: url('images/TDS.png')">
+          <div class="interp-overlay"><span class="interp-tag">TDS</span></div>
+        </div>
+        <div class="interp-info">
+          <div class="interp-title">Total Dissolved Solids</div>
+          <div class="interp-meta">Kriging interpolation · May–Jul 2025</div>
+          <button class="btn-load-overlay" data-layer="TDS" data-src="images/TDS.png">
+            <i class="fas fa-layer-group"></i> Load on Map
+          </button>
+        </div>
+      </div>
+      <div class="interp-card" data-layer="EC">
+        <div class="interp-preview" style="background-image: url('images/EC.png')">
+          <div class="interp-overlay"><span class="interp-tag">EC</span></div>
+        </div>
+        <div class="interp-info">
+          <div class="interp-title">Electrical Conductivity</div>
+          <div class="interp-meta">Kriging interpolation · May–Jul 2025</div>
+          <button class="btn-load-overlay" data-layer="EC" data-src="images/EC.png">
+            <i class="fas fa-layer-group"></i> Load on Map
+          </button>
+        </div>
+      </div>
+      <div class="interp-card" data-layer="NDVI">
+        <div class="interp-preview" style="background-image: url('images/NDVI.png')">
+          <div class="interp-overlay"><span class="interp-tag">NDVI</span></div>
+        </div>
+        <div class="interp-info">
+          <div class="interp-title">Vegetation Index (NDVI)</div>
+          <div class="interp-meta">IDW interpolation · May–Jul 2025</div>
+          <button class="btn-load-overlay" data-layer="NDVI" data-src="images/NDVI.png">
+            <i class="fas fa-layer-group"></i> Load on Map
+          </button>
+        </div>
+      </div>
+      <div class="interp-card" data-layer="NDWI">
+        <div class="interp-preview" style="background-image: url('images/NDWI.png')">
+          <div class="interp-overlay"><span class="interp-tag">NDWI</span></div>
+        </div>
+        <div class="interp-info">
+          <div class="interp-title">Water Index (NDWI)</div>
+          <div class="interp-meta">IDW interpolation · May–Jul 2025</div>
+          <button class="btn-load-overlay" data-layer="NDWI" data-src="images/NDWI.png">
+            <i class="fas fa-layer-group"></i> Load on Map
+          </button>
+        </div>
+      </div>
+      <div class="interp-card" data-layer="SI5">
+        <div class="interp-preview" style="background-image: url('images/SI5.png')">
+          <div class="interp-overlay"><span class="interp-tag">SI5</span></div>
+        </div>
+        <div class="interp-info">
+          <div class="interp-title">Salinity Index 5 (SI5)</div>
+          <div class="interp-meta">Kriging interpolation · May–Jul 2025</div>
+          <button class="btn-load-overlay" data-layer="SI5" data-src="images/SI5.png">
+            <i class="fas fa-layer-group"></i> Load on Map
+          </button>
+        </div>
+      </div>
+      <div class="interp-card" data-layer="S1">
+        <div class="interp-preview" style="background-image: url('images/S1.png')">
+          <div class="interp-overlay"><span class="interp-tag">S1</span></div>
+        </div>
+        <div class="interp-info">
+          <div class="interp-title">Sentinel-1 Salinity Index</div>
+          <div class="interp-meta">Radar-based interpolation · May–Jul 2025</div>
+          <button class="btn-load-overlay" data-layer="S1" data-src="images/S1.png">
+            <i class="fas fa-layer-group"></i> Load on Map
+          </button>
+        </div>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ── SECTION: ML / AI ───────────────────────── -->
+  <section class="dashboard-section" id="section-ml">
+
+    <div class="section-header">
+      <h2 class="section-title"><i class="fas fa-brain"></i> AI Salinity Predictions</h2>
+    </div>
+
+    <div class="ml-summary">
+      <div class="ml-card ml-low">
+        <div class="ml-card-icon"><i class="fas fa-circle-check"></i></div>
+        <div class="ml-card-val" id="mlLowCount">—</div>
+        <div class="ml-card-label">Low Risk</div>
+        <div class="ml-card-sub">EC &lt; 2 dS/m</div>
+      </div>
+      <div class="ml-card ml-moderate">
+        <div class="ml-card-icon"><i class="fas fa-circle-exclamation"></i></div>
+        <div class="ml-card-val" id="mlModCount">—</div>
+        <div class="ml-card-label">Moderate Risk</div>
+        <div class="ml-card-sub">EC 2–4 dS/m</div>
+      </div>
+      <div class="ml-card ml-high">
+        <div class="ml-card-icon"><i class="fas fa-circle-xmark"></i></div>
+        <div class="ml-card-val" id="mlHighCount">—</div>
+        <div class="ml-card-label">High Risk</div>
+        <div class="ml-card-sub">EC &gt; 4 dS/m</div>
+      </div>
+      <div class="ml-card ml-accuracy">
+        <div class="ml-card-icon"><i class="fas fa-bullseye"></i></div>
+        <div class="ml-card-val" id="mlAccuracy">—</div>
+        <div class="ml-card-label">Model Accuracy</div>
+        <div class="ml-card-sub">R² score</div>
+      </div>
+    </div>
+
+    <div class="charts-row">
+      <div class="chart-card chart-wide">
+        <div class="chart-header">
+          <span class="chart-title"><i class="fas fa-chart-line"></i> Future EC Forecast (6-month)</span>
+        </div>
+        <canvas id="mlForecastChart" height="140"></canvas>
+      </div>
+      <div class="chart-card chart-narrow">
+        <div class="chart-header">
+          <span class="chart-title"><i class="fas fa-bullseye"></i> Predicted vs Actual EC</span>
+        </div>
+        <canvas id="mlPredActChart" height="200"></canvas>
+      </div>
+    </div>
+
+    <div class="chart-card" style="max-width:600px">
+      <div class="chart-header">
+        <span class="chart-title"><i class="fas fa-ranking-star"></i> Feature Importance</span>
+      </div>
+      <canvas id="mlFeatureChart" height="180"></canvas>
+    </div>
+
+  </section>
+
+  <!-- ── SECTION: ALERTS ────────────────────────── -->
+  <section class="dashboard-section" id="section-alerts">
+
+    <div class="section-header">
+      <h2 class="section-title"><i class="fas fa-triangle-exclamation"></i> Alarm Points</h2>
+      <p class="section-sub">Sampling locations classified as High or Moderate salinity risk</p>
+    </div>
+
+    <div class="alert-table-wrap">
+      <div class="alert-filters">
+        <button class="btn-filter active" data-risk="all">All</button>
+        <button class="btn-filter" data-risk="High">High</button>
+        <button class="btn-filter" data-risk="Moderate">Moderate</button>
+        <input type="text" class="alert-search" id="alertSearch" placeholder="Search by ID or date…" />
+      </div>
+      <div class="table-responsive">
+        <table class="alarm-table" id="alarmTable">
+          <thead>
+            <tr>
+              <th>ID</th><th>Date</th><th>EC</th><th>TDS</th>
+              <th>NDVI</th><th>SI5</th><th>Risk Level</th><th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="alarmTableBody">
+            <tr><td colspan="8" class="table-empty">Loading data…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </section>
+
+</main>
+
+<!-- ═══════════════════════════════════════════════
+     SCRIPTS
+════════════════════════════════════════════════ -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.2/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+
+<script src="./js/filters.js"></script>
+<script src="./js/ml.js"></script>
+<script src="./js/app.js"></script>
+<script src="./js/charts.js"></script>
+
+</body>
+</html>
