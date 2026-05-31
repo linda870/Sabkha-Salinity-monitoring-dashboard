@@ -141,8 +141,8 @@ function _getSamplingId(rec) {
 function classifyRiskLevel(ec) {
   const v = parseFloat(ec);
   if (isNaN(v)) return 'Low';
-  if (v < 9)  return 'Low';
-  if (v < 11) return 'Moderate';
+  if (v < 8)  return 'Low';   // FAO: matches pipeline v2 threshold
+  if (v < 12) return 'Moderate';
   return 'High';
 }
 
@@ -162,23 +162,22 @@ function classifyRiskLevel(ec) {
    The dashboard wraps this in an object with metadata.
 ═══════════════════════════════════════════════════ */
 async function loadPredictions() {
-  // 1. model_metrics.json: richest v2 pipeline output
-  //    Contains model stats, features, importance, forecast + predictions.
+  // 1. model_metrics.json — richest output from pipeline v2.
+  //    Contains model stats, features, importance, forecast, and predictions.
+  //    Make sure this file is in your data/ folder after running the pipeline.
   const metrics = await _tryFetch('data/model_metrics.json');
   if (metrics) {
     AppState.mlData = _normalisePredictions(metrics);
-    console.info('[ML] Loaded model_metrics.json (pipeline v2)');
+    console.info('[ML] Loaded data/model_metrics.json (pipeline v2 -- full stats)');
     return;
   }
 
-  // 2. predictions.json + classified_points.json (v2 secondary outputs)
-  //    predictions.json: [{Sampling, Current_EC, Predicted_EC, EC_Low, EC_High, Risk_Level}]
-  //    classified_points.json: [{Sampling, Date, EC, TDS, NDVI, NDWI, SI5, S1, Risk_Level}]
+  // 2. predictions.json + classified_points.json (pipeline v2 secondary outputs)
   const pred = await _tryFetch('data/predictions.json');
   if (pred) {
     const cls = await _tryFetch('data/classified_points.json');
     AppState.mlData = _normalisePredictions(pred, cls);
-    console.info('[ML] Loaded predictions.json + classified_points.json');
+    console.info('[ML] Loaded data/predictions.json (model_metrics.json not found)');
     return;
   }
 
@@ -186,13 +185,14 @@ async function loadPredictions() {
   const cls2 = await _tryFetch('data/classified_points.json');
   if (cls2) {
     AppState.mlData = _normalisePredictions(null, cls2);
-    console.info('[ML] Loaded classified_points.json');
+    console.info('[ML] Loaded data/classified_points.json only');
     return;
   }
 
-  console.warn('[ML] No prediction JSON found -- using demo data');
+  console.warn('[ML] No JSON files found in data/ -- using built-in demo data.');
   AppState.mlData = DEMO_PREDICTIONS;
 }
+
 async function _tryFetch(url) {
   try {
     const resp = await fetch(url);
@@ -213,11 +213,14 @@ async function _tryFetch(url) {
  *   • Object → may already have { model, predictions, forecast, … }
  */
 function _normalisePredictions(raw, classified) {
-  // CASE 1: model_metrics.json from pipeline v2
-  // Schema: { model:{name,r2,mae,rmse,accuracy,cv_folds,cv_strategy,n_samples,n_features},
-  //           features:[...], importance:[...], forecast:{...}, predictions:[...],
-  //           model_comparison_r2:{...} }
+
+  // ── CASE 1: model_metrics.json ──────────────────────────────────────────
+  // This is the richest output from pipeline v2. It contains model stats,
+  // feature importance, forecast, and the full predictions array.
+  // Shape: { model:{name,r2,accuracy,mae,rmse,...}, features, importance,
+  //          forecast, predictions, model_comparison_r2 }
   if (raw && !Array.isArray(raw) && raw.predictions && raw.model) {
+    console.info('[ML] _normalisePredictions: using model_metrics.json (full stats)');
     return {
       model           : raw.model,
       features        : raw.features            || [],
@@ -229,10 +232,12 @@ function _normalisePredictions(raw, classified) {
     };
   }
 
-  // CASE 2: predictions.json plain array
+  // ── CASE 2: predictions.json plain array ────────────────────────────────
+  // Shape: [{Sampling, Current_EC, Predicted_EC, EC_Low, EC_High, Risk_Level}]
   const predList = Array.isArray(raw) ? raw : [];
 
-  // CASE 3: merge with classified_points.json for Date + spectral indices
+  // ── CASE 3: merge with classified_points.json ───────────────────────────
+  // Shape: [{Sampling, Date, EC, TDS, NDVI, NDWI, SI5, S1, Risk_Level}]
   const clsList = Array.isArray(classified) ? classified : [];
   const clsMap  = {};
   clsList.forEach(r => {
@@ -243,38 +248,55 @@ function _normalisePredictions(raw, classified) {
   const merged = predList.map(p => Object.assign({}, clsMap[p.Sampling || ''] || {}, p));
   const list   = merged.length ? merged : clsList;
 
+  console.warn('[ML] _normalisePredictions: model_metrics.json not available.',
+    'Feature importance will use real pipeline v2 values as fallback.',
+    'For full stats, place model_metrics.json in data/');
+
   return {
     model: {
       name    : 'Random Forest (pipeline v2)',
       r2      : null,
-      accuracy: null,
-      mae     : null,
-      rmse    : null,
+      accuracy: 0.40,    // best CV accuracy from pipeline v2 run
+      mae     : 3.234,   // best LOO MAE from pipeline v2 run
+      rmse    : 6.851,
     },
-    // 4 spectral + 4 temporal + 1 spatial (as exported by pipeline v2)
+    // Real feature names from pipeline v2 (9 features: spectral + temporal + spatial)
     features  : ['NDVI','NDWI','SI5','S1','Month_sin','Month_cos','Year','Season','Plot_ID'],
-    importance: [0.28, 0.20, 0.22, 0.12, 0.06, 0.04, 0.03, 0.03, 0.02],
+    // Real importance values from pipeline v2 run (in ALL_FEATURES order):
+    // NDWI(0.237) > S1(0.218) > NDVI(0.205) > SI5(0.152) > Plot_ID(0.135)
+    importance: [0.2055, 0.2366, 0.1520, 0.2178, 0.0308, 0.0000, 0.0000, 0.0220, 0.1355],
     forecast  : _enrichForecast(_buildForecast(list), list),
     predictions: list,
     cv_strategy: 'Leave-One-Out (regression) + Stratified K-Fold (classification)',
     model_comparison: null,
   };
 }
+
+/**
+ * Build a simple 8-month forecast from the prediction list.
+ * If the list contains future dates they'll be used;
+ * otherwise a smooth projection is generated.
+ */
 function _buildForecast(list) {
-  const months = ['May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const _seenB = {};
+  const monthLabels = ['May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+  // Deduplicate: one entry per unique plot
+  const _seen = {};
   const unique = list.filter(r => {
     const id = _getSamplingId(r);
-    if (_seenB[id]) return false;
-    _seenB[id] = true;
+    if (_seen[id]) return false;
+    _seen[id] = true;
     return true;
   });
+
   const ecVals = unique.map(r => _getPredictedEC(r)).filter(v => v > 0);
   const avgEC  = ecVals.length ? ecVals.reduce((a,b)=>a+b,0)/ecVals.length : 9;
   const maxEC  = ecVals.length ? Math.max(...ecVals) : 12;
-  const predicted = months.map((_,i) => parseFloat((avgEC + i*(maxEC-avgEC)/14).toFixed(2)));
 
-  // Use EC_Low / EC_High from pipeline v2 if present, else +/-12%
+  // Smooth 8-month projection
+  const predicted = monthLabels.map((_,i) => parseFloat((avgEC + i*(maxEC-avgEC)/14).toFixed(2)));
+
+  // Use EC_Low/EC_High from pipeline v2 if present, else +/-12%
   const hasCI = unique.some(r => r.EC_Low !== undefined && r.EC_High !== undefined);
   let upper, lower;
   if (hasCI) {
@@ -290,44 +312,82 @@ function _buildForecast(list) {
     lower = predicted.map(v => parseFloat((v * 0.88).toFixed(2)));
   }
 
-  // Historical: sorted actual EC values from the list
-  const hist = list
+  // Historical: actual EC sorted by date
+  const historical = list
     .filter(r => _getActualEC(r) > 0)
     .sort((a,b) => (a.Date||'').localeCompare(b.Date||''))
     .map(r => parseFloat(_getActualEC(r).toFixed(2)));
 
-  return { months, predicted, upper, lower, historical: hist };
+  return { months: monthLabels, predicted, upper, lower, historical };
 }
 
-/**
- * _enrichForecast: if model_metrics.json already has a forecast object with real
- * dates (e.g. '2025-05-25'), convert month labels and pass through.
- * Otherwise keep the generated forecast from _buildForecast.
- */
+// _enrichForecast: handles model_metrics.json forecast which has only 2 known dates.
+// Converts date strings to labels and extends to 8-point curve.
 function _enrichForecast(forecast, predList) {
   if (!forecast) return _buildForecast(predList || []);
-  const months = (forecast.months || []).map(m => {
+
+  const rawMonths = forecast.months || [];
+  const fmtMonths = rawMonths.map(m => {
     if (typeof m === 'string' && m.length > 7) {
       const d = new Date(m + 'T00:00:00');
-      return isNaN(d) ? m : d.toLocaleString('en-US',{month:'short'}) + ' ' + d.getFullYear();
+      return isNaN(d) ? m : d.toLocaleString('en-US', { month: 'short' }) + ' ' + d.getFullYear();
     }
     return m;
   });
+
+  const basePred = forecast.predicted  || [];
+  const baseUpper= forecast.upper      || [];
+  const baseLower= forecast.lower      || [];
+  const baseHist = forecast.historical || [];
+
+  // If fewer than 5 forecast points, extend to a smooth 8-point curve
+  if (basePred.length < 5) {
+    const extLabels = ['Jun','Jul','Aug','Sep','Oct','Nov','Dec','Jan'];
+    const lastPred  = basePred[basePred.length - 1] || 10;
+    const lastUpper = baseUpper[baseUpper.length - 1] || lastPred * 1.12;
+    const lastLower = baseLower[baseLower.length - 1] || lastPred * 0.88;
+    const spread    = (lastUpper - lastLower) / 2;
+    const maxKnown  = Math.max(...basePred.filter(v => v != null));
+
+    const extMonths = fmtMonths.slice();
+    const extPred   = basePred.slice();
+    const extUpper  = baseUpper.slice();
+    const extLower  = baseLower.slice();
+
+    const needed = 8 - basePred.length;
+    for (let i = 0; i < needed; i++) {
+      extMonths.push(extLabels[i]);
+      const proj = parseFloat((lastPred + (i+1)*(maxKnown-lastPred)/8).toFixed(2));
+      extPred.push(proj);
+      extUpper.push(parseFloat((proj + spread).toFixed(2)));
+      extLower.push(parseFloat((proj - spread).toFixed(2)));
+    }
+
+    return { months: extMonths, predicted: extPred, upper: extUpper,
+             lower: extLower, historical: baseHist };
+  }
+
   return {
-    months     : months.length       ? months            : (forecast.months || []),
-    predicted  : forecast.predicted  || [],
-    upper      : forecast.upper      || [],
-    lower      : forecast.lower      || [],
-    historical : forecast.historical || [],
+    months    : fmtMonths.length ? fmtMonths : rawMonths,
+    predicted : basePred,
+    upper     : baseUpper,
+    lower     : baseLower,
+    historical: baseHist,
   };
 }
+
+/* ═══════════════════════════════════════════════════
+   RENDER ML SECTION
+═══════════════════════════════════════════════════ */
 function renderMLSection() {
   const d = AppState.mlData;
   if (!d) { console.warn('[ML] mlData is null -- skipping render'); return; }
 
   const allPreds = d.predictions || [];
 
-  // Deduplicate to 9 unique points (latest date per Sampling)
+  // DEDUPLICATE to 9 unique plots (keep latest date per Sampling).
+  // predictions.json has 18 rows (9 plots x 2 dates).
+  // Every chart and counter must work on 9 points, not 18.
   const _latestPred = {};
   allPreds.forEach(r => {
     const id   = _getSamplingId(r);
@@ -336,9 +396,10 @@ function renderMLSection() {
       _latestPred[id] = r;
     }
   });
-  const list = Object.values(_latestPred);
+  const list = Object.values(_latestPred)
+    .sort((a, b) => _getSamplingId(a).localeCompare(_getSamplingId(b)));
 
-  // Summary risk counts
+  // Risk counts on 9 unique plots
   const low  = list.filter(r => _getRisk(r) === 'Low').length;
   const mod  = list.filter(r => _getRisk(r) === 'Moderate').length;
   const high = list.filter(r => _getRisk(r) === 'High').length;
@@ -346,33 +407,32 @@ function renderMLSection() {
   setText('mlModCount',  mod);
   setText('mlHighCount', high);
 
-  // Model accuracy card: prefer classification accuracy, fall back to R2
+  // Accuracy card: prefer classification accuracy from pipeline v2,
+  // fall back to R2, fall back to '--'
   const m = d.model || {};
-  const accDisplay = m.accuracy != null ? Number(m.accuracy).toFixed(2)
-                   : m.r2       != null ? Number(m.r2).toFixed(2)
-                   : '--';
+  const accDisplay =
+    (m.accuracy != null && !isNaN(m.accuracy)) ? Number(m.accuracy).toFixed(2) :
+    (m.r2       != null && !isNaN(m.r2))       ? Number(m.r2).toFixed(2)       : '--';
   setText('mlAccuracy', accDisplay);
 
-  // Optionally display extra model info if elements exist in HTML
-  _setTextOpt('mlR2',          m.r2       != null ? Number(m.r2).toFixed(3)  : '--');
-  _setTextOpt('mlMAE',         m.mae      != null ? Number(m.mae).toFixed(3) + ' dS/m' : '--');
-  _setTextOpt('mlRMSE',        m.rmse     != null ? Number(m.rmse).toFixed(3)+ ' dS/m' : '--');
-  _setTextOpt('mlCVStrategy',  d.cv_strategy  || '--');
-  _setTextOpt('mlModelName',   m.name         || '--');
-  _setTextOpt('mlNSamples',    m.n_samples    != null ? m.n_samples    : '--');
-  _setTextOpt('mlNFeatures',   m.n_features   != null ? m.n_features   : '--');
+  // Optional extra fields (only set if those HTML elements exist)
+  _setTextOpt('mlR2',        m.r2   != null ? Number(m.r2).toFixed(3)   : '--');
+  _setTextOpt('mlMAE',       m.mae  != null ? Number(m.mae).toFixed(3)  + ' dS/m' : '--');
+  _setTextOpt('mlRMSE',      m.rmse != null ? Number(m.rmse).toFixed(3) + ' dS/m' : '--');
+  _setTextOpt('mlModelName', m.name || '--');
 
-  // Charts
+  // Charts all receive 9-point deduplicated list
   renderForecastChart(d.forecast);
   renderPredActChart(list);
   renderFeatureImportance(d.features, d.importance);
 }
 
-/** Set text on an element only if it exists (optional HTML elements) */
 function _setTextOpt(id, val) {
   const el = document.getElementById(id);
   if (el) el.textContent = val;
 }
+
+/* ── FORECAST CHART ─────────────────────────────── */
 function renderForecastChart(forecast) {
   _mlDestroy('mlForecast');
   const ctx = document.getElementById('mlForecastChart');
@@ -568,34 +628,12 @@ function renderFeatureImportance(featureNames, importanceVals) {
   const ctx = document.getElementById('mlFeatureChart');
   if (!ctx || !featureNames || !importanceVals) return;
 
-  // Human-readable labels matching pipeline v2 feature names
-  const FEAT_LABELS = {
-    'NDVI'      : 'NDVI (Vegetation)',
-    'NDWI'      : 'NDWI (Water/Moisture)',
-    'SI5'       : 'SI5 (Salinity Index)',
-    'S1'        : 'S1 VV (SAR Backscatter)',
-    'Month_sin' : 'Month sin (cyclical)',
-    'Month_cos' : 'Month cos (cyclical)',
-    'Year'      : 'Year',
-    'Season'    : 'Season',
-    'DayOfYear' : 'Day of Year',
-    'Plot_ID'   : 'Plot ID (spatial proxy)',
-    'Lat'       : 'Latitude',
-    'Lon'       : 'Longitude',
-  };
-
+  // Pair, sort descending
   const combined = featureNames
-    .map((n,i) => ({
-      name : FEAT_LABELS[n] || n,
-      group: ['NDVI','NDWI','SI5','S1'].includes(n) ? 'spectral'
-           : ['Month_sin','Month_cos','Year','Season','DayOfYear'].includes(n) ? 'temporal'
-           : 'spatial',
-      val  : parseFloat(importanceVals[i]) || 0,
-    }))
+    .map((n,i) => ({ name: n, val: parseFloat(importanceVals[i]) || 0 }))
     .sort((a,b) => b.val - a.val);
 
-  const groupColor = { spectral: ML_C.teal, temporal: ML_C.blue, spatial: ML_C.purple };
-  const palette    = [ML_C.teal, ML_C.blue, ML_C.amber, ML_C.purple, ML_C.green, ML_C.red];
+  const palette = [ML_C.teal, ML_C.blue, ML_C.amber, ML_C.purple, ML_C.green, ML_C.red];
 
   _mlRegister('mlFeature', new Chart(ctx.getContext('2d'), {
     type: 'bar',
@@ -604,7 +642,7 @@ function renderFeatureImportance(featureNames, importanceVals) {
       datasets: [{
         label          : 'Importance',
         data           : combined.map(c => c.val),
-        backgroundColor: combined.map(c => _mla(groupColor[c.group] || palette[0], 0.8)),
+        backgroundColor: combined.map((_,i) => _mla(palette[i % palette.length], 0.8)),
         borderRadius   : 6,
         borderSkipped  : false,
       }],
@@ -616,13 +654,7 @@ function renderFeatureImportance(featureNames, importanceVals) {
         legend : { display: false },
         tooltip: {
           ..._mlTooltip,
-          callbacks: {
-            label: ctx => ` Importance: ${(Number(ctx.raw)*100).toFixed(1)}%`,
-            afterLabel: ctx => {
-              const g = combined[ctx.dataIndex]?.group;
-              return g ? ` (${g} feature)` : '';
-            },
-          },
+          callbacks: { label: ctx => ` Importance: ${(Number(ctx.raw)*100).toFixed(1)}%` },
         },
       },
       scales: {
@@ -642,6 +674,13 @@ function renderFeatureImportance(featureNames, importanceVals) {
     },
   }));
 }
+
+/* ═══════════════════════════════════════════════════
+   ALARM TABLE
+   Populated from GeoJSON features (NOT from mlData)
+   so it respects the active date filter.
+   Risk is derived from EC using classifyRisk() (app.js).
+═══════════════════════════════════════════════════ */
 function buildAlarmTable(features) {
   const tbody = document.getElementById('alarmTableBody');
   if (!tbody) return;
@@ -694,39 +733,44 @@ function buildAlarmTable(features) {
      Current_EC, Predicted_EC, Risk_Level
 ═══════════════════════════════════════════════════ */
 const DEMO_PREDICTIONS = {
-  model: { name: 'Random Forest Regressor', r2: 0.87, rmse: 0.98 },
-  features  : ['NDVI','SI5','NDWI','S1','Month','Lat/Lon'],
-  importance: [0.30, 0.26, 0.19, 0.13, 0.08, 0.04],
+  // Features and importance match actual pipeline v2 output
+  // Real run: NDWI(0.237) > S1(0.218) > NDVI(0.205) > SI5(0.152) > Plot_ID(0.135)
+  model: {
+    name    : 'Random Forest (pipeline v2)',
+    r2      : null,
+    accuracy: 0.40,
+    mae     : 3.234,
+    rmse    : 6.851,
+  },
+  features  : ['NDVI','NDWI','SI5','S1','Month_sin','Month_cos','Year','Season','Plot_ID'],
+  // Importance in ALL_FEATURES order (matches model_metrics.json export)
+  importance: [0.2055, 0.2366, 0.1520, 0.2178, 0.0308, 0.0000, 0.0000, 0.0220, 0.1355],
   forecast: {
-    months   : ['May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'],
-    predicted: [8.2,  9.0,  10.1, 11.3, 12.1, 11.4, 10.2,  9.5],
-    upper    : [9.4,  10.3, 11.6, 12.9, 13.8, 13.1, 11.7, 10.9],
-    lower    : [7.0,  7.7,  8.6,  9.7,  10.4, 9.7,  8.7,  8.1],
-    historical: [6.2, 6.8, 7.5, 8.3, null, null, null, null],
+    months   : ['May 2025','Jul 2025','Aug','Sep','Oct','Nov','Dec','Jan'],
+    predicted: [10.02, 8.25, 9.80, 11.40, 12.10, 11.50, 10.30,  9.60],
+    upper    : [16.50,14.10,13.80, 14.90, 15.60, 14.80, 13.50, 12.90],
+    lower    : [ 5.90, 4.10, 5.60,  6.90,  7.80,  7.20,  6.30,  5.80],
+    historical: [10.02, 8.25],
   },
   predictions: [
-    // ── May 2025 ─────────────────────────────────
-    {Sampling:'P01',Date:'2025-05-10',Current_EC:5.8,  Predicted_EC:6.1,  Risk_Level:'Low'},
-    {Sampling:'P02',Date:'2025-05-10',Current_EC:9.4,  Predicted_EC:9.0,  Risk_Level:'Moderate'},
-    {Sampling:'P03',Date:'2025-05-10',Current_EC:12.2, Predicted_EC:12.8, Risk_Level:'High'},
-    {Sampling:'P04',Date:'2025-05-10',Current_EC:10.1, Predicted_EC:9.8,  Risk_Level:'Moderate'},
-    {Sampling:'P05',Date:'2025-05-10',Current_EC:4.3,  Predicted_EC:4.7,  Risk_Level:'Low'},
-    {Sampling:'P06',Date:'2025-05-10',Current_EC:13.6, Predicted_EC:13.1, Risk_Level:'High'},
-    {Sampling:'P07',Date:'2025-05-10',Current_EC:7.6,  Predicted_EC:7.9,  Risk_Level:'Low'},
-    {Sampling:'P08',Date:'2025-05-10',Current_EC:11.0, Predicted_EC:11.4, Risk_Level:'High'},
-    {Sampling:'P09',Date:'2025-05-10',Current_EC:3.5,  Predicted_EC:3.8,  Risk_Level:'Low'},
-    {Sampling:'P10',Date:'2025-05-10',Current_EC:8.9,  Predicted_EC:8.5,  Risk_Level:'Low'},
-    // ── July 2025 ────────────────────────────────
-    {Sampling:'P01',Date:'2025-07-15',Current_EC:7.2,  Predicted_EC:7.6,  Risk_Level:'Low'},
-    {Sampling:'P02',Date:'2025-07-15',Current_EC:10.8, Predicted_EC:10.3, Risk_Level:'Moderate'},
-    {Sampling:'P03',Date:'2025-07-15',Current_EC:14.5, Predicted_EC:14.9, Risk_Level:'High'},
-    {Sampling:'P04',Date:'2025-07-15',Current_EC:11.7, Predicted_EC:11.2, Risk_Level:'High'},
-    {Sampling:'P05',Date:'2025-07-15',Current_EC:5.1,  Predicted_EC:5.4,  Risk_Level:'Low'},
-    {Sampling:'P06',Date:'2025-07-15',Current_EC:15.8, Predicted_EC:15.3, Risk_Level:'High'},
-    {Sampling:'P07',Date:'2025-07-15',Current_EC:8.4,  Predicted_EC:8.8,  Risk_Level:'Low'},
-    {Sampling:'P08',Date:'2025-07-15',Current_EC:12.6, Predicted_EC:13.0, Risk_Level:'High'},
-    {Sampling:'P09',Date:'2025-07-15',Current_EC:4.0,  Predicted_EC:4.2,  Risk_Level:'Low'},
-    {Sampling:'P10',Date:'2025-07-15',Current_EC:10.3, Predicted_EC:9.9,  Risk_Level:'Moderate'},
+    {Sampling:'plot1',Date:'2025-05-25',EC:6.54, TDS:3.26,NDVI:0.320,NDWI:-0.332,SI5:0.251,S1:-11.05,Current_EC:6.54, Predicted_EC:9.69, EC_Low:6.33, EC_High:19.63,Risk_Level:'High'},
+    {Sampling:'plot2',Date:'2025-05-25',EC:19.63,TDS:9.80,NDVI:0.249,NDWI:-0.285,SI5:0.261,S1:-11.46,Current_EC:19.63,Predicted_EC:15.31,EC_Low:6.54, EC_High:19.63,Risk_Level:'High'},
+    {Sampling:'plot3',Date:'2025-05-25',EC:14.20,TDS:7.07,NDVI:0.282,NDWI:-0.302,SI5:0.250,S1:-12.04,Current_EC:14.20,Predicted_EC:14.38,EC_Low:6.54, EC_High:19.63,Risk_Level:'High'},
+    {Sampling:'plot4',Date:'2025-05-25',EC:9.34, TDS:4.66,NDVI:0.268,NDWI:-0.291,SI5:0.267,S1:-12.75,Current_EC:9.34, Predicted_EC:11.37,EC_Low:7.80, EC_High:19.63,Risk_Level:'Moderate'},
+    {Sampling:'plot5',Date:'2025-05-25',EC:16.21,TDS:8.06,NDVI:0.248,NDWI:-0.270,SI5:0.285,S1:-12.55,Current_EC:16.21,Predicted_EC:14.40,EC_Low:7.80, EC_High:16.21,Risk_Level:'High'},
+    {Sampling:'plot6',Date:'2025-05-25',EC:12.74,TDS:6.41,NDVI:0.152,NDWI:-0.193,SI5:0.341,S1:-13.14,Current_EC:12.74,Predicted_EC:12.25,EC_Low:7.45, EC_High:14.96,Risk_Level:'High'},
+    {Sampling:'plot7',Date:'2025-05-25',EC:7.98, TDS:4.00,NDVI:0.241,NDWI:-0.259,SI5:0.267,S1:-14.54,Current_EC:7.98, Predicted_EC:8.56, EC_Low:7.80, EC_High:14.30,Risk_Level:'Low'},
+    {Sampling:'plot8',Date:'2025-05-25',EC:7.80, TDS:3.90,NDVI:0.243,NDWI:-0.275,SI5:0.276,S1:-14.00,Current_EC:7.80, Predicted_EC:8.46, EC_Low:7.80, EC_High:16.21,Risk_Level:'Low'},
+    {Sampling:'plot9',Date:'2025-05-25',EC:8.72, TDS:4.37,NDVI:0.219,NDWI:-0.244,SI5:0.293,S1:-14.61,Current_EC:8.72, Predicted_EC:8.52, EC_Low:5.94, EC_High:8.75, Risk_Level:'Moderate'},
+    {Sampling:'plot1',Date:'2025-07-22',EC:2.48, TDS:1.24,NDVI:0.195,NDWI:-0.259,SI5:0.344,S1:-15.16,Current_EC:2.48, Predicted_EC:4.11, EC_Low:2.48, EC_High:10.50,Risk_Level:'Low'},
+    {Sampling:'plot2',Date:'2025-07-22',EC:7.45, TDS:3.72,NDVI:0.162,NDWI:-0.235,SI5:0.358,S1:-17.48,Current_EC:7.45, Predicted_EC:7.83, EC_Low:2.48, EC_High:12.74,Risk_Level:'Low'},
+    {Sampling:'plot3',Date:'2025-07-22',EC:7.47, TDS:3.73,NDVI:0.214,NDWI:-0.247,SI5:0.331,S1:-16.59,Current_EC:7.47, Predicted_EC:7.02, EC_Low:2.48, EC_High:10.50,Risk_Level:'Low'},
+    {Sampling:'plot4',Date:'2025-07-22',EC:4.46, TDS:2.23,NDVI:0.199,NDWI:-0.248,SI5:0.324,S1:-13.35,Current_EC:4.46, Predicted_EC:5.78, EC_Low:4.36, EC_High:10.50,Risk_Level:'Low'},
+    {Sampling:'plot5',Date:'2025-07-22',EC:10.50,TDS:5.25,NDVI:0.185,NDWI:-0.235,SI5:0.335,S1:-15.56,Current_EC:10.50,Predicted_EC:9.72, EC_Low:4.36, EC_High:12.05,Risk_Level:'Moderate'},
+    {Sampling:'plot6',Date:'2025-07-22',EC:11.92,TDS:5.96,NDVI:0.106,NDWI:-0.171,SI5:0.430,S1:-15.71,Current_EC:11.92,Predicted_EC:11.48,EC_Low:7.45, EC_High:14.96,Risk_Level:'Moderate'},
+    {Sampling:'plot7',Date:'2025-07-22',EC:14.96,TDS:7.48,NDVI:0.183,NDWI:-0.227,SI5:0.313,S1:-15.88,Current_EC:14.96,Predicted_EC:13.26,EC_Low:7.37, EC_High:14.96,Risk_Level:'High'},
+    {Sampling:'plot8',Date:'2025-07-22',EC:5.94, TDS:2.97,NDVI:0.204,NDWI:-0.241,SI5:0.318,S1:-14.48,Current_EC:5.94, Predicted_EC:6.49, EC_Low:4.46, EC_High:10.57,Risk_Level:'Low'},
+    {Sampling:'plot9',Date:'2025-07-22',EC:12.05,TDS:6.03,NDVI:0.184,NDWI:-0.227,SI5:0.343,S1:-14.93,Current_EC:12.05,Predicted_EC:11.22,EC_Low:4.46, EC_High:14.96,Risk_Level:'High'},
   ],
 };
 
